@@ -7,6 +7,7 @@ import (
 	"fmt"
 	ics "github.com/darmiel/golang-ical"
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	"github.com/patrickmn/go-cache"
@@ -112,26 +113,11 @@ func main() {
 		AppName: "E. T.",
 	})
 
-	httpApp.Get("/:flow_id.json", func(ctx *fiber.Ctx) error {
-		flowID := ctx.Params("flow_id")
-		result := m.FlowCollection().FindOne(context.TODO(), bson.M{
-			"flow-id": flowID,
-		})
-		if result.Err() != nil {
-			return fmt.Errorf("cannot find flow: %v", result.Err())
-		}
-		var f model.Flow
-		if err := result.Decode(&f); err != nil {
-			return fmt.Errorf("cannot decode flow: %v", err)
-		}
-		fmt.Printf("%+v\n", f)
-		// a user can only show flows which he has access to
-		u := ctx.Locals("user").(gofiberfirebaseauth.User)
-		if u.UserID != f.UserID {
-			return ctx.Status(http.StatusUnauthorized).SendString("you are not allowed to access this flow.")
-		}
-		return ctx.Status(200).JSON(f)
-	})
+	httpApp.Use(cors.New(cors.Config{
+		AllowOrigins: "*",
+		AllowMethods: "*",
+		AllowHeaders: "*",
+	}))
 
 	httpApp.Get("/:flow_id.ics", func(ctx *fiber.Ctx) error {
 		verbose := ctx.QueryBool("verbose", false)
@@ -206,6 +192,39 @@ func main() {
 		TokenExtractor: gofiberfirebaseauth.NewHeaderExtractor("Bearer "),
 	}))
 
+	httpApp.Get("/:flow_id.json", func(ctx *fiber.Ctx) error {
+		flowID := ctx.Params("flow_id")
+		result := m.FlowCollection().FindOne(context.TODO(), bson.M{
+			"flow-id": flowID,
+		})
+		if result.Err() != nil {
+			return fmt.Errorf("cannot find flow: %v", result.Err())
+		}
+		var f model.Flow
+		if err := result.Decode(&f); err != nil {
+			return fmt.Errorf("cannot decode flow: %v", err)
+		}
+		fmt.Printf("%+v\n", f)
+		// a user can only show flows which he has access to
+		u := ctx.Locals("user").(gofiberfirebaseauth.User)
+		if u.UserID != f.UserID {
+			return ctx.Status(http.StatusUnauthorized).SendString("you are not allowed to access this flow.")
+		}
+		return ctx.Status(200).JSON(f)
+	})
+
+	httpApp.Delete("/:flow_id", func(ctx *fiber.Ctx) error {
+		flowID := ctx.Params("flow_id")
+		result, err := m.FlowCollection().DeleteOne(context.TODO(), bson.M{
+			"flow-id": flowID,
+		})
+		if err != nil {
+			return fmt.Errorf("cannot delete flow: %+v", err)
+		}
+		return ctx.Status(http.StatusOK).SendString(fmt.Sprintf("deleted %d",
+			result.DeletedCount))
+	})
+
 	// GET /me/flows - Returns a list of flow ids + names
 	httpApp.Get("/flows", func(ctx *fiber.Ctx) error {
 		u := ctx.Locals("user").(gofiberfirebaseauth.User)
@@ -263,7 +282,7 @@ func main() {
 		return ctx.SendString(msg)
 	})
 
-	if err = httpApp.Listen(":8081"); err != nil {
+	if err = httpApp.Listen(":5544"); err != nil {
 		panic(err)
 	}
 }
