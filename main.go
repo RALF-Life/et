@@ -22,6 +22,7 @@ import (
 	"google.golang.org/api/option"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"strconv"
@@ -110,7 +111,9 @@ func main() {
 
 	// http server
 	httpApp := fiber.New(fiber.Config{
-		AppName: "E. T.",
+		AppName:                 "E. T.",
+		EnableTrustedProxyCheck: false,
+		ProxyHeader:             "X-Forwarded-For",
 	})
 
 	httpApp.Use(cors.New(cors.Config{
@@ -169,7 +172,26 @@ func main() {
 			EnableDebug: debug,
 			Verbose:     verbose,
 		}
-		if err = engine.ModifyCalendar(cp, flow.Flows, cal); err != nil {
+		err = engine.ModifyCalendar(cp, flow.Flows, cal)
+
+		// try to add the history entry
+		debugMessages := make([]string, len(cp.Debugs))
+		for i, v := range cp.Debugs {
+			debugMessages[i] = fmt.Sprintf("%+v", v)
+		}
+		h := model.History{
+			FlowID:    flowID,
+			Address:   ctx.IP(),
+			Timestamp: time.Now(),
+			Success:   err == nil,
+			Debug:     debugMessages,
+			Action:    "execute",
+		}
+		if _, err = m.HistoryCollection().InsertOne(context.TODO(), h); err != nil {
+			fmt.Println("warn :: cannot save EXECUTE history:", err)
+		}
+
+		if err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "failed to run flow ("+err.Error()+")")
 		}
 		if r := recover(); r != nil {
@@ -188,10 +210,6 @@ func main() {
 		return ctx.Status(http.StatusOK).SendString(cal.Serialize())
 	})
 
-	httpApp.Use(gofiberfirebaseauth.New(app, gofiberfirebaseauth.Config{
-		TokenExtractor: gofiberfirebaseauth.NewHeaderExtractor("Bearer "),
-	}))
-
 	httpApp.Get("/:flow_id.json", func(ctx *fiber.Ctx) error {
 		flowID := ctx.Params("flow_id")
 		result := m.FlowCollection().FindOne(context.TODO(), bson.M{
@@ -205,12 +223,32 @@ func main() {
 			return fmt.Errorf("cannot decode flow: %v", err)
 		}
 		fmt.Printf("%+v\n", f)
-		// a user can only show flows which he has access to
-		u := ctx.Locals("user").(gofiberfirebaseauth.User)
-		if u.UserID != f.UserID {
-			return ctx.Status(http.StatusUnauthorized).SendString("you are not allowed to access this flow.")
-		}
 		return ctx.Status(200).JSON(f)
+	})
+
+	httpApp.Use(gofiberfirebaseauth.New(app, gofiberfirebaseauth.Config{
+		TokenExtractor: gofiberfirebaseauth.NewHeaderExtractor("Bearer "),
+	}))
+
+	httpApp.Get("/:flow_id/history", func(ctx *fiber.Ctx) error {
+		limit := math.Max(1, math.Min(10000, float64(ctx.QueryInt("limit", 100))))
+		flowID := ctx.Params("flow_id")
+
+		// Fun Fact: We're actually leaking the IP Address of the user.
+		// But since this is only a demo, we don't care :)
+		cur, err := m.HistoryCollection().Find(context.TODO(), bson.M{
+			"flow-id": flowID,
+		}, options.Find().SetSort(bson.M{"timestamp": -1}).SetLimit(int64(limit)))
+		if err != nil {
+			return ctx.Status(http.StatusInternalServerError).SendString(err.Error())
+		}
+
+		history := make([]model.History, 1)
+		if err = cur.All(context.TODO(), &history); err != nil {
+			return fmt.Errorf("cannot decode: %+v", err)
+		}
+
+		return ctx.Status(http.StatusOK).JSON(history)
 	})
 
 	httpApp.Delete("/:flow_id", func(ctx *fiber.Ctx) error {
@@ -218,6 +256,19 @@ func main() {
 		result, err := m.FlowCollection().DeleteOne(context.TODO(), bson.M{
 			"flow-id": flowID,
 		})
+
+		h := model.History{
+			FlowID:    flowID,
+			Address:   ctx.IP(),
+			Timestamp: time.Now(),
+			Success:   err == nil,
+			Debug:     nil,
+			Action:    "delete",
+		}
+		if _, err = m.HistoryCollection().InsertOne(context.TODO(), h); err != nil {
+			fmt.Println("warn :: cannot save DELETE history:", err)
+		}
+
 		if err != nil {
 			return fmt.Errorf("cannot delete flow: %+v", err)
 		}
@@ -234,7 +285,7 @@ func main() {
 		if err != nil {
 			return ctx.Status(http.StatusInternalServerError).SendString(err.Error())
 		}
-		var results []model.FlowHead
+		var results []model.Flow
 		if err = cur.All(context.TODO(), &results); err != nil {
 			return ctx.Status(http.StatusInternalServerError).SendString(err.Error())
 		}
@@ -269,11 +320,28 @@ func main() {
 				"$set": flow,
 			},
 			options.Update().SetUpsert(true))
+
+		var msg string
+		if result != nil {
+			msg = fmt.Sprintf("matched %d, modified %d, upserted %d",
+				result.MatchedCount, result.ModifiedCount, result.UpsertedCount)
+		}
+
+		h := model.History{
+			FlowID:    flow.FlowID,
+			Address:   ctx.IP(),
+			Timestamp: time.Now(),
+			Success:   err == nil,
+			Debug:     []string{msg},
+			Action:    "update",
+		}
+		if _, err = m.HistoryCollection().InsertOne(context.TODO(), h); err != nil {
+			fmt.Println("warn :: cannot save UPDATE history:", err)
+		}
+
 		if err != nil {
 			return ctx.Status(http.StatusInternalServerError).SendString(err.Error())
 		}
-		msg := fmt.Sprintf("matched %d, modified %d, upserted %d",
-			result.MatchedCount, result.ModifiedCount, result.UpsertedCount)
 		if result.UpsertedCount > 0 {
 			ctx = ctx.Status(http.StatusCreated)
 		} else {

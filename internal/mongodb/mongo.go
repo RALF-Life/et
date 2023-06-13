@@ -5,7 +5,8 @@ import (
 )
 
 const (
-	FlowCollection = "flows"
+	FlowCollection    = "flows"
+	HistoryCollection = "history"
 )
 
 type Client struct {
@@ -26,4 +27,8 @@ func (c *Client) collection(name string) *mongo.Collection {
 
 func (c *Client) FlowCollection() *mongo.Collection {
 	return c.collection(FlowCollection)
+}
+
+func (c *Client) HistoryCollection() *mongo.Collection {
+	return c.collection(HistoryCollection)
 }
