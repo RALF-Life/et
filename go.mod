@@ -4,10 +4,12 @@ go 1.20
 
 require (
 	firebase.google.com/go v3.13.0+incompatible
+	github.com/darmiel/golang-ical v0.0.0-20221121153313-bd526fc4018d
 	github.com/gofiber/fiber/v2 v2.46.0
 	github.com/google/uuid v1.3.0
 	github.com/joho/godotenv v1.5.1
-	github.com/ralf-life/engine v1.2.1-0.20230605121711-5aff01ee0eae
+	github.com/patrickmn/go-cache v2.1.0+incompatible
+	github.com/ralf-life/engine v1.3.1-0.20230613084609-69dc56f05ffb
 	github.com/ralf-life/gofiber-firebaseauth v0.0.0-20230605133945-0096650c1e87
 	go.mongodb.org/mongo-driver v1.11.6
 	google.golang.org/api v0.125.0
@@ -22,6 +24,7 @@ require (
 	cloud.google.com/go/longrunning v0.5.0 // indirect
 	cloud.google.com/go/storage v1.30.1 // indirect
 	github.com/andybalholm/brotli v1.0.5 // indirect
+	github.com/antonmedv/expr v1.12.5 // indirect
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
 	github.com/golang/protobuf v1.5.3 // indirect
 	github.com/golang/snappy v0.0.4 // indirect

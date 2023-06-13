@@ -2,11 +2,15 @@ package main
 
 import (
 	"context"
+	"errors"
 	firebase "firebase.google.com/go"
 	"fmt"
+	ics "github.com/darmiel/golang-ical"
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
+	"github.com/patrickmn/go-cache"
+	"github.com/ralf-life/engine/pkg/engine"
 	engineModel "github.com/ralf-life/engine/pkg/model"
 	"github.com/ralf-life/et/internal/mongodb"
 	"github.com/ralf-life/et/pkg/model"
@@ -15,10 +19,52 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"google.golang.org/api/option"
+	"io"
 	"log"
+	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 )
+
+const MaxContentLength = 100 * 1000 * 1000 // 100 MB
+
+var (
+	client                   = &http.Client{}
+	ch                       = cache.New(5*time.Minute, 10*time.Minute)
+	ErrExceededContentLength = errors.New("exceeded max. content length of " + strconv.Itoa(MaxContentLength))
+)
+
+func getSourceWithRequest(url string, cacheDuration time.Duration) (string, error) {
+	resp, err := client.Get(url)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.ContentLength > MaxContentLength {
+		return "", ErrExceededContentLength
+	}
+	valBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	val := string(valBytes)
+
+	ch.Set("source::"+url, val, cacheDuration)
+	fmt.Println("[" + url + "] from request")
+	return val, nil
+}
+
+func getSource(url string, cacheDuration time.Duration) (string, error) {
+	res, ok := ch.Get("source::" + url)
+	if !ok {
+		return getSourceWithRequest(url, cacheDuration)
+	}
+	fmt.Println("[" + url + "] from cache")
+	return res.(string), nil
+}
 
 func main() {
 	if err := godotenv.Load(); err != nil {
@@ -50,22 +96,6 @@ func main() {
 		log.Fatalln("error initializing firebase app:", err)
 		return
 	}
-	auth, err := app.Auth(context.TODO())
-	if err != nil {
-		log.Fatalln("error initializing auth:", err)
-		return
-	}
-	fmt.Println("verify:")
-	fmt.Println(auth.VerifyIDToken(context.TODO(), "eyJhbGciOiJSUzI1NiIsImtpZCI6IjU0NWUyNDZjNTEwNmExMGQ2MzFiMTA0M2E3MWJiNTllNWJhMGM5NGQiLCJ0eXAiOiJKV1QifQ.eyJpc3MiOiJodHRwczovL3NlY3VyZXRva2VuLmdvb2dsZS5jb20vcmFsZi1kZW1vIiwiYXVkIjoicmFsZi1kZW1vIiwiYXV0aF90aW1lIjoxNjg1OTU2MjA4LCJ1c2VyX2lkIjoicTY5eTdweVJ2emJZT3R4OHVCQmc4Zkc4d2dOMiIsInN1YiI6InE2OXk3cHlSdnpiWU90eDh1QkJnOGZHOHdnTjIiLCJpYXQiOjE2ODU5NTYyMDgsImV4cCI6MTY4NTk1OTgwOCwiZW1haWwiOiJ0ZXN0MkB0ZXN0LmNvbSIsImVtYWlsX3ZlcmlmaWVkIjpmYWxzZSwiZmlyZWJhc2UiOnsiaWRlbnRpdGllcyI6eyJlbWFpbCI6WyJ0ZXN0MkB0ZXN0LmNvbSJdfSwic2lnbl9pbl9wcm92aWRlciI6InBhc3N3b3JkIn19.iB0M5MZnv38UmmrxGLoH4xJdcadkKFHKEoZlT77BRL7erAXs9spYRlUZVJKVp7MAQrwmMUtzuoau4uPHWEa7sHQqo_qQBSP9QqDAZoUyDDTAiB13y00ezNx2EPha47LUj3TJJVHi8xGjQ_qoV093Q2IpoLfrPJGKXjwsT6nwp1X7Z9svxJK5RL6KIb356lxsH6HQri-hGRU-OKROMbEIVv3CmTYg4ieUlXDP7NCOUftch89KdNT4XMdGDONg_yhVjjC7nXfGNrbWc9MHoNmEY9R6UN4tRNVkkMS__i_iLzxltI_XnLRXjNSvHH2jcECaet-_qd5ofm7vG7cooUVPgw"))
-
-	// http server
-	httpApp := fiber.New(fiber.Config{
-		AppName: "E. T.",
-	})
-	// unauthorized routes here
-	httpApp.Get("/world", func(ctx *fiber.Ctx) error {
-		return ctx.SendString("world hello!")
-	})
 
 	// connect to mongo
 	mongoClient, err := mongo.Connect(context.TODO(), options.Client().ApplyURI(uri))
@@ -76,65 +106,13 @@ func main() {
 		_ = mongoClient.Disconnect(context.TODO())
 	}()
 	m := mongodb.New(mongoClient, dbName)
-	/*
-		if err = m.CreateIndexes(); err != nil {
-			fmt.Println("index err")
-			panic(err)
-		}
-	*/
 
-	f := model.Flow{
-		FlowID:        uuid.New().String(),
-		UserID:        "wAFGXfTZsIeQO597GRbt4gDZQEl2",
-		Name:          "My first Flow",
-		Source:        "https://google.com",
-		CacheDuration: 2 * time.Minute,
-		Flows: engineModel.Flows{
-			&engineModel.ActionFlow{
-				FlowIdentifier: "filters/filter-out",
-			},
-			&engineModel.ConditionFlow{
-				Condition: engineModel.Conditions{
-					"Event.Summary() contains 'Test'",
-				},
-				Operator: "and",
-				Then: engineModel.Flows{
-					&engineModel.DebugFlow{
-						Debug: "Event summary contains Test!",
-					},
-					&engineModel.ReturnFlow{
-						Return: true,
-					},
-				},
-				Else: engineModel.Flows{
-					&engineModel.ConditionFlow{
-						Condition: engineModel.Conditions{
-							"Date.IsToday()",
-						},
-						Operator: "or",
-						Else: engineModel.Flows{
-							&engineModel.ActionFlow{
-								FlowIdentifier: "filters/filter-out",
-							},
-							&engineModel.ReturnFlow{
-								Return: true,
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-	fmt.Println(m.FlowCollection().UpdateOne(context.TODO(),
-		bson.M{
-			"flow-id": f.FlowID,
-		},
-		bson.M{
-			"$set": f,
-		},
-		options.Update().SetUpsert(true)))
+	// http server
+	httpApp := fiber.New(fiber.Config{
+		AppName: "E. T.",
+	})
 
-	httpApp.Get("/flows/:flow_id", func(ctx *fiber.Ctx) error {
+	httpApp.Get("/:flow_id.json", func(ctx *fiber.Ctx) error {
 		flowID := ctx.Params("flow_id")
 		result := m.FlowCollection().FindOne(context.TODO(), bson.M{
 			"flow-id": flowID,
@@ -146,7 +124,82 @@ func main() {
 		if err := result.Decode(&f); err != nil {
 			return fmt.Errorf("cannot decode flow: %v", err)
 		}
+		fmt.Printf("%+v\n", f)
+		// a user can only show flows which he has access to
+		u := ctx.Locals("user").(gofiberfirebaseauth.User)
+		if u.UserID != f.UserID {
+			return ctx.Status(http.StatusUnauthorized).SendString("you are not allowed to access this flow.")
+		}
 		return ctx.Status(200).JSON(f)
+	})
+
+	httpApp.Get("/:flow_id.ics", func(ctx *fiber.Ctx) error {
+		verbose := ctx.QueryBool("verbose", false)
+		debug := ctx.QueryBool("debug", true)
+
+		flowID := ctx.Params("flow_id")
+		result := m.FlowCollection().FindOne(context.TODO(), bson.M{
+			"flow-id": flowID,
+		})
+		if result.Err() != nil {
+			return fmt.Errorf("cannot find flow: %v", result.Err())
+		}
+		var flow model.Flow
+		if err := result.Decode(&flow); err != nil {
+			return fmt.Errorf("cannot decode flow: %v", err)
+		}
+
+		// validate profile
+		if strings.TrimSpace(flow.Source) == "" {
+			return fiber.NewError(fiber.StatusBadRequest, "`source` required")
+		}
+
+		// require a cache duration of at least 120s
+		cd := time.Duration(flow.CacheDuration)
+		if cd.Minutes() < 2.0 {
+			cd = 2 * time.Minute
+		}
+
+		body, err := getSource(flow.Source, cd)
+		if err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "cannot request source ("+err.Error()+")")
+		}
+
+		// parse calendar
+		cal, err := ics.ParseCalendar(strings.NewReader(body))
+		if err != nil {
+			return fiber.NewError(fiber.StatusExpectationFailed, "failed to parse source calendar ("+err.Error()+")")
+		}
+
+		// create context and run flow
+		cp := &engine.ContextFlow{
+			Profile: &engineModel.Profile{
+				Name:          flow.Name,
+				Source:        flow.Source,
+				CacheDuration: engineModel.Duration(flow.CacheDuration),
+				Flows:         flow.Flows,
+			},
+			Context:     make(map[string]interface{}),
+			EnableDebug: debug,
+			Verbose:     verbose,
+		}
+		if err = engine.ModifyCalendar(cp, flow.Flows, cal); err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "failed to run flow ("+err.Error()+")")
+		}
+		if r := recover(); r != nil {
+			fmt.Printf("had to recover! %+v\n", r)
+			return ctx.Status(http.StatusInternalServerError).SendString("recover")
+		}
+
+		// append debug messages as header
+		ctx.Append("X-Debug-Message-Count", strconv.Itoa(len(cp.Debugs)))
+		for i, v := range cp.Debugs {
+			ctx.Append(fmt.Sprintf("X-Debug-Message-%d", i+1), fmt.Sprintf("%+v", v))
+		}
+
+		// append content-type and return calendar
+		ctx.Set("Content-Type", "text/calendar")
+		return ctx.Status(http.StatusOK).SendString(cal.Serialize())
 	})
 
 	httpApp.Use(gofiberfirebaseauth.New(app, gofiberfirebaseauth.Config{
@@ -154,13 +207,60 @@ func main() {
 	}))
 
 	// GET /me/flows - Returns a list of flow ids + names
-	// GET /flows/:flow_id/json - Returns a flow as JSON
-	// GET /flows/:flow_id - Executes the flow
-	// POST /flows/:flow_id - Saves a flow
+	httpApp.Get("/flows", func(ctx *fiber.Ctx) error {
+		u := ctx.Locals("user").(gofiberfirebaseauth.User)
+		cur, err := m.FlowCollection().Find(context.TODO(), bson.M{
+			"user-id": u.UserID,
+		})
+		if err != nil {
+			return ctx.Status(http.StatusInternalServerError).SendString(err.Error())
+		}
+		var results []model.FlowHead
+		if err = cur.All(context.TODO(), &results); err != nil {
+			return ctx.Status(http.StatusInternalServerError).SendString(err.Error())
+		}
+		return ctx.Status(http.StatusOK).JSON(results)
+	})
 
-	// authorized routes here
-	httpApp.Get("/hello", func(ctx *fiber.Ctx) error {
-		return ctx.SendString("hello world!")
+	// POST /flows - Saves/Creates a flow
+	httpApp.Post("/flows", func(ctx *fiber.Ctx) error {
+		var flow model.Flow
+		if err := ctx.BodyParser(&flow); err != nil {
+			return ctx.Status(http.StatusBadRequest).SendString(err.Error())
+		}
+		u := ctx.Locals("user").(gofiberfirebaseauth.User)
+		flow.UserID = u.UserID
+
+		// if no flow id was specified, generate a new one.
+		if flow.FlowID == "" {
+			flow.FlowID = uuid.New().String()
+		}
+
+		// min. cache duration of 2 minutes required.
+		if flow.CacheDuration.Minutes() < 2 {
+			flow.CacheDuration = 2 * time.Minute
+		}
+
+		result, err := m.FlowCollection().UpdateOne(context.TODO(),
+			bson.M{
+				"flow-id": flow.FlowID,
+				"user-id": u.UserID,
+			},
+			bson.M{
+				"$set": flow,
+			},
+			options.Update().SetUpsert(true))
+		if err != nil {
+			return ctx.Status(http.StatusInternalServerError).SendString(err.Error())
+		}
+		msg := fmt.Sprintf("matched %d, modified %d, upserted %d",
+			result.MatchedCount, result.ModifiedCount, result.UpsertedCount)
+		if result.UpsertedCount > 0 {
+			ctx = ctx.Status(http.StatusCreated)
+		} else {
+			ctx = ctx.Status(http.StatusOK)
+		}
+		return ctx.SendString(msg)
 	})
 
 	if err = httpApp.Listen(":8081"); err != nil {
