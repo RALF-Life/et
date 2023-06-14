@@ -9,7 +9,7 @@ require (
 	github.com/google/uuid v1.3.0
 	github.com/joho/godotenv v1.5.1
 	github.com/patrickmn/go-cache v2.1.0+incompatible
-	github.com/ralf-life/engine v1.3.1-0.20230613084609-69dc56f05ffb
+	github.com/ralf-life/engine v1.3.1-0.20230614105625-67c435301ed0
 	github.com/ralf-life/gofiber-firebaseauth v0.0.0-20230605133945-0096650c1e87
 	go.mongodb.org/mongo-driver v1.11.6
 	google.golang.org/api v0.125.0
