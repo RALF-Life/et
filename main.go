@@ -36,7 +36,18 @@ var (
 	client                   = &http.Client{}
 	ch                       = cache.New(5*time.Minute, 10*time.Minute)
 	ErrExceededContentLength = errors.New("exceeded max. content length of " + strconv.Itoa(MaxContentLength))
+	// build flags
+	// main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+	version string
+	commit  string
+	date    string
 )
+
+type buildInfo struct {
+	Version string `json:"version"`
+	Commit  string `json:"commit"`
+	Date    string `json:"date"`
+}
 
 func getSourceWithRequest(url string, cacheDuration time.Duration) (string, error) {
 	resp, err := client.Get(url)
@@ -121,6 +132,15 @@ func main() {
 		AllowMethods: "*",
 		AllowHeaders: "*",
 	}))
+
+	// Health check
+	httpApp.Get("/icanhazralf", func(ctx *fiber.Ctx) error {
+		return ctx.Status(http.StatusOK).JSON(buildInfo{
+			Version: version,
+			Commit:  commit,
+			Date:    date,
+		})
+	})
 
 	httpApp.Get("/:flow_id.ics", func(ctx *fiber.Ctx) error {
 		verbose := ctx.QueryBool("verbose", false)
